@@ -24,5 +24,29 @@ Este documento lista os erros encontrados durante o desenvolvimento e execução
 **Causa:** Esquecimento de importar explicitamente os objetos de mensagem usados para inicializar os testes do LangGraph.
 **Correção:** Adição dos imports: `from langchain_core.messages import HumanMessage, AIMessage, ToolMessage`.
 
+## 5. Tools do agente não batiam com o servidor MCP real
+**Erro:** O agente chamava tools/argumentos inexistentes (`get_macro_data`, `get_fii_data`, `screen_stocks(roe_min, pl_max)`, `compare_stocks(tickers: list)`).
+**Causa:** As assinaturas foram escritas sem conferir o `bolsai_mcp/server.py` (v0.1.1): o nome real é `get_macro_indicator` (com `usd_brl`), `get_fii_details`, `compare_stocks(tickers: str "A,B")` e `screen_stocks(metric, operator, value, ...)`.
+**Correção:** O BFA chama exatamente os nomes/argumentos do MCP, valida o manifesto na conexão e as tools do agente (`agent/tools.py`) foram reescritas com as assinaturas corretas (incluindo `search_companies`, `get_price_history` e `get_financial_statements`).
+
+## 6. `RuntimeError: Attempted to exit cancel scope in a different task`
+**Erro:** Falha ao encerrar a sessão MCP.
+**Causa:** O contexto `stdio_client` era aberto (`__aenter__`) e fechado (`__aexit__`) manualmente em tasks diferentes.
+**Correção:** No BFA, `MCPGateway` abre, usa e fecha a sessão dentro de UMA task supervisora (`async with`), com reconexão automática.
+
+## 7. Erros do MCP chegavam ao LLM como se fossem dados
+**Erro:** Respostas como "Not found:", "Invalid API key" ou "Rate limit exceeded" eram tratadas como resultado válido; `result.isError` era ignorado e só o primeiro `content` era lido.
+**Correção:** O BFA classifica esses textos em códigos tipados (`not_found`, `rate_limited`...), devolve um envelope `ToolResult` com status HTTP adequado, não cacheia erros, junta todos os `content` de texto e o cliente do agente entrega ao LLM `ERRO [codigo]: mensagem`.
+
+## 8. `ModuleNotFoundError: No module named 'mcp.server.fastmcp'` (servidor bolsai-mcp)
+**Erro:** o `uvx bolsai-mcp` passou a falhar logo na inicialização; o BFA ficava em `degraded`.
+**Causa:** o `uvx` instala a versão mais nova do SDK `mcp` (2.x), onde `FastMCP` foi renomeado para `MCPServer`. O `bolsai-mcp` 0.1.1 ainda importa `FastMCP` e não restringe a versão.
+**Correção:** o BFA sobe o servidor com `uvx --with "mcp<2" bolsai-mcp==0.1.1` (`bfa/config.py`, `MCP_ARGS`) e o projeto fixa `mcp>=1.27,<2` no `pyproject.toml`.
+
+## 9. Respostas vazias do MCP eram cacheadas
+**Erro:** com chave inválida, `compare_stocks` devolvia "No data found for any of the tickers." e essa resposta ficava 6h no cache.
+**Causa:** o `bolsai-mcp` engole os erros por ticker no `compare_stocks` e responde como "sem dados".
+**Correção:** respostas vazias ("No data found", "No companies found", "No stocks found") continuam `ok=true`, mas não são cacheadas (`bfa/errors.py`, `is_empty_result`).
+
 ## Estado Atual
-O fluxo foi refatorado para utilizar uma estrutura assíncrona/robusta (no arquivo `test_flow.py`) que orquestra a comunicação do `lead_advisor` com o `market_analyst` e o `agente_b3` (acessando a ferramenta MCP). Estamos aguardando os testes finais rodarem para validar o processo fim-a-fim.
+O fluxo foi refatorado: os agentes (`agent/`) falam apenas HTTP com o BFA (`bfa/`), que mantém a única sessão MCP com o Bolsai. Veja o `README.md` para a arquitetura e como rodar. A validação com chaves reais (OpenAI/Bolsai) ainda precisa ser feita.
